@@ -1,24 +1,57 @@
-## Debug task
+# Debug Task
 
-1. Root cause of the problem:
-    - main was built using dynamic linking. This is plausible because
-    if glibc is statically linked to our binary then it doesn't matter what
-    version of glibc the target system has.
-    - main was built on a different glibc version. This is plausible because
-    if we decide to dinamically link the binary then we need compatible 
-    glibc versions to be prensent on both, the builder machine and 
-    the target machine
-2. One verification step per hypothesis:
-    - to know if the file is dynamically linked we can run `ldd ./main`
-    - to know what glibc version the current machine is running we run `ldd --version`
+## Most Likely Causes
 
-3. Your fix.
-    - I would prefix the build command with `CGO_ENABLED=0`, it will work because
-    it doesn't allow Go to use C libraries (so not dynamic linking to glibc will happen)
+1. The application was probably launched directly from the SSH deployment shell, such as `./main &`. In that setup the process can stay attached to the login session and may receive `SIGHUP`, or otherwise be cleaned up, when SSH disconnects. This fits the symptom where the app is reachable during the session but disappears as soon as the session ends.
 
-4. One sentence explaining what the underlying lesson is for "deploy a Go binary to a different machine."
-    - The lesson from here is to not dynamically link my 
-    binaries (if I'm deployoing it to a different machine).
-    Specifically for Go is to use `CGO_ENABLED=0` to avoid 
-    dynamically linking to glibc
+2. The deployment may only confirm that the file was copied and the start command exited successfully. That does not prove the app survived after the remote shell closed, or that port `4444` is still accepting requests. A pipeline can pass while the real service is already dead by the time someone tests it.
 
+## How To Verify
+
+To check whether the app is tied to the SSH session, inspect the process while it is still running:
+
+```sh
+ps aux | grep main
+```
+
+If the `main` process has the SSH shell in its ancestry or belongs to the SSH session instead of being managed by a supervisor, it is not safely detached from the login lifecycle.
+
+To check whether the pipeline actually validates the running service, inspect the Jenkins output:
+
+```sh
+grep curl jenkins-console.log
+grep systemctl jenkins-console.log
+```
+
+If the logs show copy/start commands but no listener check, `systemctl status`, or HTTP request to `http://<target-host>:4444/`, then the pipeline is not proving the deployed app is still healthy.
+
+## Fix
+
+Run the app under a service manager. A small `systemd` unit is the preferred approach because the process becomes independent of SSH and can be restarted, inspected, and logged consistently:
+
+```sh
+sudo cp main /opt/myapp/main
+sudo cp main.service /etc/systemd/system/main.service
+sudo systemctl daemon-reload
+sudo systemctl enable main.service
+sudo systemctl restart main.service
+sudo systemctl status main.service
+```
+
+After restarting the service, make the pipeline verify the actual HTTP contract:
+
+```sh
+curl http://127.0.0.1:4444/
+```
+
+If `systemd` is not available, detaching with `nohup` is a fallback:
+
+```sh
+nohup /opt/myapp/main >/var/log/myapp.log 2>&1 </dev/null &
+```
+
+That fallback is weaker. It does not provide the same restart behavior, status reporting, or log integration that `systemd` gives.
+
+## Lesson
+
+Starting a process is not the same thing as deploying a service. A raw background process still depends on the environment that launched it, while a supervised service has an owner that can keep it running, report its state, and give the deployment pipeline something reliable to manage.
