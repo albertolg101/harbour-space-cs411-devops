@@ -1,0 +1,26 @@
+---
+- name: Deploy app container on the Docker machine
+  hosts: all
+  gather_facts: false
+
+  vars:
+    image: "ttl.sh/albertolg101:2h"
+    container_name: albertolg101
+
+  tasks:
+    - name: Pull image from ttl.sh
+      ansible.builtin.command: "docker pull {{ image }}"
+
+    - name: Remove existing container
+      ansible.builtin.command: "docker rm -f {{ container_name }}"
+      register: rm_result
+      changed_when: rm_result.rc == 0
+      failed_when: false
+
+    - name: Run container on port 4444
+      ansible.builtin.command: >
+        docker run -d
+        --name {{ container_name }}
+        --restart unless-stopped
+        -p 4444:4444
+        {{ image }}
