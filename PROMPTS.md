@@ -1,214 +1,71 @@
-# PROMPTS.md — introduction-to-builds
+# Prompts and Answers
 
-## Context
+## Service Restart and Dedicated User
 
-This file documents the AI-assisted work and thinking process I used while completing the `introduction-to-builds` iximiuz challenge. The main goal was to understand how to build, inspect, and run Go binaries across different operating systems and architectures, and to prepare the required reflection and debug write-up.
+**Prompt:** We want the app to restart on failure, and we also want the app to run as a non-root dedicated `myapp` user.
 
-## Prompts and assistance used
+**Answer:** Updated the systemd service so it runs the process as `myapp:myapp`, starts `/opt/myapp/main`, and restarts on failure with a short delay. Updated the Ansible playbook to create the `myapp` system group and user, create `/opt/myapp`, deploy the binary there as `myapp`, and enable/start the service.
 
-### 1. Understanding the submission requirements
+## Idempotent Deploy
 
-**Prompt:**  
-“Briefly explain what do I have to do here.”
+**Prompt:** Is our deploy idempotent?
 
-**Summary of help received:**  
-I asked for a short explanation of the challenge requirements. The response clarified that I needed to complete the iximiuz challenge, push the required files to the `main` branch of my GitHub repository, and submit the iximiuz URL, GitHub repo URL, and `PROMPTS.md` in Google Classroom.
+**Answer:** Mostly, but there were a few implicit pieces that could cause unnecessary changes or restarts. The playbook used idempotent Ansible modules, but the systemd unit copy did not pin ownership/mode, the restart handler did not reload systemd after unit changes, and the Go build command was not explicitly reproducible.
 
-### 2. Planning next steps after creating the GitHub repo
+**Prompt:** Make it idempotent.
 
-**Prompt:**  
-“The last step I did was to create the GitHub repo, what are the next steps I have to do, explain them shortly and very clear/concise.”
+**Answer:** Added `daemon_reload: true` to the restart handler so changed unit files are loaded before restart.
 
-**Summary of help received:**  
-The answer gave me a practical sequence: clone the repo into the playground, create or copy `main.go`, build the binary with `go build -o main main.go`, run and test it with `curl`, create at least one stretch artifact, write `REFLECTION.md` and `DEBUG.md`, commit everything, and push to `main`.
+**Prompt:** What about the `main` file being built every time?
 
-### 3. Understanding executable formats
+**Answer:** Made the Jenkins build more reproducible with:
 
-**Prompt:**  
-“From there, what does Mach-O mean?”
-
-**Summary of help received:**  
-I learned that Mach-O means Mach Object and is the executable format used by macOS. This helped me understand why a file reported as `Mach-O 64-bit executable x86_64` was built for macOS Intel, not Linux.
-
-### 4. Understanding cross-compilation output
-
-**Prompt:**  
-“For what OS is this: `main-arm64: ELF 64-bit LSB executable, ARM aarch64...`”
-
-**Summary of help received:**  
-The response explained that this binary was built for Linux on ARM64. I learned that `ELF` indicates a Linux/Unix-style executable and `ARM aarch64` means ARM64 architecture.
-
-### 5. Comparing `file` command outputs
-
-**Prompt:**  
-“Why the second one has more details than the second? Is the first one stripped?”
-
-**Summary of help received:**  
-The explanation clarified that the `file` command often shows more metadata for ELF binaries than for Mach-O binaries. I also learned that a shorter `file` output does not necessarily mean the binary is stripped, and that `go tool nm main` can help check for symbols.
-
-### 6. Debugging the GLIBC error
-
-**Prompt:**  
-“What can this be: `./main: /lib/x86_64-linux-gnu/libc.so.6: version GLIBC_2.34 not found`”
-
-**Summary of help received:**  
-I learned that this usually means the binary was built on a newer Linux system with a newer glibc version and then copied to an older system that does not have the required glibc version.
-
-### 7. Finding another possible cause
-
-**Prompt:**  
-“What can be another cause?”
-
-**Summary of help received:**  
-The answer explained that CGO could have been enabled during the Go build, causing the binary to dynamically link against glibc. This gave me a second hypothesis for `DEBUG.md`.
-
-### 8. Writing ranked hypotheses
-
-**Prompt:**  
-“I need to write two ranked hypotheses for the root cause. Higher likelihood first, with a one-sentence reason why each is plausible.”
-
-**Summary of help received:**  
-I received a clearer way to phrase the two hypotheses: first, the binary was built on a newer Linux system than the customer VM; second, the binary was built with CGO enabled, creating a dynamic glibc dependency.
-
-### 9. Understanding the difference between the two hypotheses
-
-**Prompt:**  
-“I don't get the difference between these two.”
-
-**Summary of help received:**  
-The answer explained that the first hypothesis describes where the `GLIBC_2.34` requirement came from, while the second explains why the Go binary depended on glibc at all.
-
-### 10. Understanding static linking
-
-**Prompt:**  
-“What happen if I statically link but build it in a newer OS?”
-
-**Summary of help received:**  
-I learned that a statically linked Go binary built with `CGO_ENABLED=0` usually avoids the target machine’s glibc dependency, although the OS and architecture still need to match.
-
-### 11. Verification commands
-
-**Prompt:**  
-“One verification step per hypothesis — a concrete command you'd run on the customer's VM (or yours) that distinguishes them.”
-
-**Summary of help received:**  
-The suggested verification commands were `ldd --version` to check the glibc version on the target VM and `ldd ./main` to check whether the binary dynamically links against glibc.
-
-### 12. Building a dynamically linked Go binary
-
-**Prompt:**  
-“How to build a dynamically linked Go binary?”
-
-**Summary of help received:**  
-I learned that `CGO_ENABLED=1 go build -ldflags='-linkmode=external' -o main main.go` can produce a dynamically linked Go binary, and that `ldd ./main` can confirm the dynamic dependencies.
-
-### 13. Reading `ldd` output
-
-**Prompt:**  
-“What does this shows? `linux-vdso.so.1`, `libc.so.6`, `/lib64/ld-linux-x86-64.so.2`”
-
-**Summary of help received:**  
-The response explained that this output proves the binary is dynamically linked and depends on glibc. In particular, `libc.so.6` is the important evidence for the GLIBC dependency.
-
-### 14. Understanding CGO
-
-**Prompt:**  
-“What does CGO mean?”
-
-**Summary of help received:**  
-I learned that CGO means C Go and is the Go feature that lets Go code call C code and use C libraries. I also learned the practical difference between `CGO_ENABLED=1` and `CGO_ENABLED=0`.
-
-## How I used the assistance
-
-I used the AI responses to understand the concepts behind the commands instead of only copying commands. The most useful ideas were the difference between Mach-O and ELF, the meaning of architecture labels like `x86_64` and `aarch64`, the role of dynamic linking, and why CGO can make a Go binary depend on glibc. I used that understanding to prepare the challenge artifacts, especially the `DEBUG.md` explanation.
-
-## Commands I planned to use or verify
-
-```bash
-go build -o main main.go
-file ./main
-ldd ./main
-ldd --version
-CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o main main.go
-CGO_ENABLED=1 go build -ldflags='-linkmode=external' -o main main.go
-go build -ldflags='-s -w' -o main-stripped main.go
-du -b ./main ./main-stripped
+```groovy
+go build -trimpath -buildvcs=false -o main app/main.go
 ```
 
-## Remaining unclear points
+This removes local path data, avoids VCS metadata in the binary, and writes the artifact to an explicit path. Repeated local builds with these flags produced the same SHA-256 checksum.
 
-I still need more practice with the exact details of static versus dynamic linking in Go, especially how CGO changes the final binary depending on the operating system, architecture, and installed C libraries. I understand the high-level idea, but I would like to become more confident predicting the result before running `file` or `ldd`.
+**Prompt:** Do your last check and ensure the deploy is idempotent, as much as possible.
 
-# From a different LLM session:
+**Answer:** Pinned the systemd unit file metadata in the playbook:
 
-## Prompt 1
-
-Explain what these Go build flags do:
-
-```bash
-go build -ldflags='-s -w' -o main-stripped main.go
+```yaml
+owner: root
+group: root
+mode: "0644"
 ```
 
-## Prompt 2
+The app still runs as `myapp`; only `/etc/systemd/system/myapp.service` is owned by root because it is system configuration. The deployed binary remains owned by `myapp:myapp`.
 
-What is DWARF debug information, and why does the Go linker flag `-w` remove it?
+**Prompt:** Why was what we had before not 100% idempotent?
 
-## Prompt 3
+**Answer:** It was mostly idempotent, but some desired state was implicit. The Jenkins build did not use reproducibility flags, so equivalent source could potentially produce different binary bytes and trigger unnecessary copies/restarts. The systemd unit copy did not pin `owner`, `group`, or `mode`, so file metadata could drift. The restart handler also restarted without `daemon_reload: true`, so a changed unit file might not be loaded before restart.
 
-Given this Go HTTP server, write a Ruby/Sinatra version that returns the same JSON shape on port 4444:
+## Health Check
 
-```go
-package main
+**Prompt:** Add a health check to the deploy, so once the service is restarted we curl it and get the expected JSON shape.
 
-import (
-    "encoding/json"
-    "fmt"
-    "log"
-    "net/http"
-)
+**Answer:** Added an Ansible health check using `ansible.builtin.uri` after `meta: flush_handlers`, so pending service restarts happen before validation. The deploy now calls `http://127.0.0.1:4444/`, retries up to 10 times with a 2-second delay, and requires HTTP `200` plus the expected JSON shape:
 
-type Simple struct {
-    Name        string
-    Description string
-    Url         string
-}
-
-func handler(w http.ResponseWriter, r *http.Request) {
-    simple := Simple{"Hello", "World", r.Host}
-
-    jsonOutput, _ := json.Marshal(simple)
-
-    w.Header().Set("Content-Type", "application/json")
-
-    fmt.Fprintln(w, string(jsonOutput))
-}
-
-func main() {
-    fmt.Println("Server started on port 4444")
-    http.HandleFunc("/", handler)
-    log.Fatal(http.ListenAndServe(":4444", nil))
+```json
+{
+  "Name": "Hello",
+  "Description": "World",
+  "Url": "<defined>"
 }
 ```
 
-## Prompt 4
+**Prompt:** Does the deploy only succeed if the health check succeeds?
 
-I am getting this Sinatra error:
+**Answer:** Yes. If the health check fails after retries, Ansible exits non-zero, so the Jenkins deploy stage fails.
 
-```text
-attack prevented by Rack::Protection::HostAuthorization
-403 Host not permitted
-```
+**Prompt:** What real-world failure do we catch now that we have the health check?
 
-How do I fix it for a small lab app running on port 4444?
+**Answer:** The health check catches cases where systemd starts the service but the app is not actually serving the expected API, such as the process crashing after start, listening on the wrong port, returning invalid JSON, serving the wrong fields, returning HTTP `500`, or pointing the unit at the wrong binary.
 
-## Prompt 5
+## Validation Notes
 
-Is this reflection answer correct?
-
-```text
-For the Go binary to run, I need only the binary statically linked or dynamically linked with the correct library versions installed, but for Ruby I need the interpreter and the required gems.
-```
-
-## Prompt 6
-
-Help me write a clear `REFLECTION.md` explaining the difference between what is needed to run a Go binary and what is needed to run a Ruby/Sinatra script.
+- `git diff --check` passed after the deployment changes.
+- `playbook.yml` parsed as valid YAML.
+- `ansible-playbook --syntax-check` could not be run locally because `ansible-playbook` is not installed in the workspace.
