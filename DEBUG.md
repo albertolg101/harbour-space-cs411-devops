@@ -31,11 +31,11 @@ Run the app under a service manager. A small `systemd` unit is the preferred app
 
 ```sh
 sudo cp main /opt/myapp/main
-sudo cp main.service /etc/systemd/system/main.service
+sudo cp myapp.service /etc/systemd/system/myapp.service
 sudo systemctl daemon-reload
-sudo systemctl enable main.service
-sudo systemctl restart main.service
-sudo systemctl status main.service
+sudo systemctl enable myapp.service
+sudo systemctl restart myapp.service
+sudo systemctl status myapp.service
 ```
 
 After restarting the service, make the pipeline verify the actual HTTP contract:

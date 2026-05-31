@@ -32,22 +32,44 @@
         owner: myapp
         group: myapp
         mode: "0755"
-      notify: Restart main.service
+      notify: Restart myapp.service
+
+    - name: Check for old service unit
+      become: True
+      ansible.builtin.stat:
+        path: /etc/systemd/system/main.service
+      register: old_service_unit
+
+    - name: Stop and disable old service
+      become: True
+      ansible.builtin.systemd:
+        name: main.service
+        enabled: false
+        state: stopped
+      when: old_service_unit.stat.exists
+
+    - name: Remove old service unit
+      become: True
+      ansible.builtin.file:
+        path: /etc/systemd/system/main.service
+        state: absent
+      when: old_service_unit.stat.exists
+      notify: Reload systemd
 
     - name: Create a unit file
       become: True
       ansible.builtin.copy:
-        src: main.service
-        dest: /etc/systemd/system/main.service
+        src: myapp.service
+        dest: /etc/systemd/system/myapp.service
         owner: root
         group: root
         mode: "0644"
-      notify: Restart main.service
+      notify: Restart myapp.service
 
     - name: Ensure the service is running
       become: True
       ansible.builtin.systemd:
-        name: main.service
+        name: myapp.service
         daemon_reload: true
         enabled: true
         state: started
@@ -72,9 +94,14 @@
         - healthcheck.json.Url is defined
 
   handlers:
-    - name: Restart main.service
+    - name: Reload systemd
       become: True
       ansible.builtin.systemd:
-        name: main.service
+        daemon_reload: true
+
+    - name: Restart myapp.service
+      become: True
+      ansible.builtin.systemd:
+        name: myapp.service
         daemon_reload: true
         state: restarted

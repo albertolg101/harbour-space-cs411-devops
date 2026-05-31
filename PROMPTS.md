@@ -4,7 +4,7 @@
 
 **Prompt:** We want the app to restart on failure, and we also want the app to run as a non-root dedicated `myapp` user.
 
-**Answer:** Updated `main.service` so systemd runs the process as `myapp:myapp`, starts `/opt/myapp/main`, and restarts on failure with a short delay. Updated the Ansible playbook to create the `myapp` system group and user, create `/opt/myapp`, deploy the binary there as `myapp`, and enable/start the service.
+**Answer:** Updated the systemd service so it runs the process as `myapp:myapp`, starts `/opt/myapp/main`, and restarts on failure with a short delay. Updated the Ansible playbook to create the `myapp` system group and user, create `/opt/myapp`, deploy the binary there as `myapp`, and enable/start the service.
 
 ## Idempotent Deploy
 
@@ -36,7 +36,7 @@ group: root
 mode: "0644"
 ```
 
-The app still runs as `myapp`; only `/etc/systemd/system/main.service` is owned by root because it is system configuration. The deployed binary remains owned by `myapp:myapp`.
+The app still runs as `myapp`; only `/etc/systemd/system/myapp.service` is owned by root because it is system configuration. The deployed binary remains owned by `myapp:myapp`.
 
 **Prompt:** Why was what we had before not 100% idempotent?
 
