@@ -52,6 +52,25 @@
         enabled: true
         state: started
 
+    - name: Apply pending service restarts before health check
+      ansible.builtin.meta: flush_handlers
+
+    - name: Check application health endpoint
+      ansible.builtin.uri:
+        url: http://127.0.0.1:4444/
+        method: GET
+        return_content: true
+        status_code: 200
+      register: healthcheck
+      retries: 10
+      delay: 2
+      until:
+        - healthcheck.status | default(0) == 200
+        - healthcheck.json is defined
+        - healthcheck.json.Name == "Hello"
+        - healthcheck.json.Description == "World"
+        - healthcheck.json.Url is defined
+
   handlers:
     - name: Restart main.service
       become: True
