@@ -39,6 +39,9 @@
       ansible.builtin.copy:
         src: main.service
         dest: /etc/systemd/system/main.service
+        owner: root
+        group: root
+        mode: "0644"
       notify: Restart main.service
 
     - name: Ensure the service is running
@@ -54,4 +57,5 @@
       become: True
       ansible.builtin.systemd:
         name: main.service
+        daemon_reload: true
         state: restarted

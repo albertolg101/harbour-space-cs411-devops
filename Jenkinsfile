@@ -8,7 +8,7 @@ pipeline {
     stages {
         stage('Build') {
             steps {
-                sh "go build app/main.go"
+                sh "go build -trimpath -buildvcs=false -o main app/main.go"
             }
         }
 
