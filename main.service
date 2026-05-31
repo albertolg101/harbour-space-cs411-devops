@@ -3,8 +3,11 @@ Description=CS411 application
 After=network.target
 
 [Service]
-ExecStart=/home/laborant/main
+User=myapp
+Group=myapp
+ExecStart=/opt/myapp/main
 Restart=on-failure
+RestartSec=5s
 
 [Install]
 WantedBy=multi-user.target

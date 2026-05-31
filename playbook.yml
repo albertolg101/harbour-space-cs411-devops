@@ -1,15 +1,42 @@
 - hosts: all
   tasks:
+    - name: Create application group
+      become: True
+      ansible.builtin.group:
+        name: myapp
+        system: true
+
+    - name: Create application user
+      become: True
+      ansible.builtin.user:
+        name: myapp
+        group: myapp
+        system: true
+        create_home: false
+        shell: /usr/sbin/nologin
+
+    - name: Create application directory
+      become: True
+      ansible.builtin.file:
+        path: /opt/myapp
+        state: directory
+        owner: myapp
+        group: myapp
+        mode: "0755"
+
     - name: Copy the artifact
-      copy:
+      become: True
+      ansible.builtin.copy:
         src: main
-        dest: /home/laborant/main
+        dest: /opt/myapp/main
+        owner: myapp
+        group: myapp
         mode: "0755"
       notify: Restart main.service
 
     - name: Create a unit file
       become: True
-      copy:
+      ansible.builtin.copy:
         src: main.service
         dest: /etc/systemd/system/main.service
       notify: Restart main.service
@@ -19,6 +46,7 @@
       ansible.builtin.systemd:
         name: main.service
         daemon_reload: true
+        enabled: true
         state: started
 
   handlers:
