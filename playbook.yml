@@ -1,0 +1,29 @@
+- hosts: all
+  tasks:
+    - name: Copy the artifact
+      copy:
+        src: main
+        dest: /home/laborant/main
+        mode: "0755"
+      notify: Restart main.service
+
+    - name: Create a unit file
+      become: True
+      copy:
+        src: main.service
+        dest: /etc/systemd/system/main.service
+      notify: Restart main.service
+
+    - name: Ensure the service is running
+      become: True
+      ansible.builtin.systemd:
+        name: main.service
+        daemon_reload: true
+        state: started
+
+  handlers:
+    - name: Restart main.service
+      become: True
+      ansible.builtin.systemd:
+        name: main.service
+        state: restarted
