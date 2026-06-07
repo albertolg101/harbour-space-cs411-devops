@@ -3,8 +3,7 @@ pipeline {
 
     environment {
         IMAGE = "ttl.sh/albertolg101:2h"
-        DEPLOY_HOST = "docker"
-        ANSIBLE_HOST_KEY_CHECKING = "False"
+        KUBE_ARGS = '--server=https://kubernetes:6443 --insecure-skip-tls-verify=true'
     }
 
     stages {
@@ -20,14 +19,15 @@ pipeline {
             }
         }
 
-        stage('Deploy') {
+        stage('Deploy: Kubernetes') {
             steps {
-                withCredentials([sshUserPrivateKey(
-                    credentialsId: 'docker-ssh-key',
-                    keyFileVariable: 'SSH_KEY',
-                    usernameVariable: 'SSH_USER'
-                )]) {
-                    sh 'ansible-playbook -i "$DEPLOY_HOST," --private-key=$SSH_KEY --user=$SSH_USER -e image=$IMAGE playbook.yml'
+                withCredentials([string(credentialsId: 'k8s-token', variable: 'K8S_TOKEN')]) {
+                    sh '''
+                        kubectl ${KUBE_ARGS} --token="$K8S_TOKEN" delete pod myapp --ignore-not-found=true
+                        kubectl ${KUBE_ARGS} --token="$K8S_TOKEN" apply -f k8s/pod.yaml
+                        kubectl ${KUBE_ARGS} --token="$K8S_TOKEN" apply -f k8s/service.yaml
+                        kubectl ${KUBE_ARGS} --token="$K8S_TOKEN" wait --for=condition=Ready pod/myapp --timeout=120s
+                    '''
                 }
             }
         }

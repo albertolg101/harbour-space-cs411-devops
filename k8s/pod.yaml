@@ -1,0 +1,32 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: myapp
+  labels:
+    app: myapp
+spec:
+  containers:
+    - name: myapp
+      image: ttl.sh/albertolg101:2h
+      imagePullPolicy: Always
+      ports:
+        - containerPort: 4444
+      readinessProbe:
+        httpGet:
+          path: /
+          port: 4444
+        initialDelaySeconds: 5
+        periodSeconds: 10
+      livenessProbe:
+        httpGet:
+          path: /
+          port: 4444
+        initialDelaySeconds: 10
+        periodSeconds: 15
+      resources:
+        requests:
+          cpu: 50m
+          memory: 64Mi
+        limits:
+          cpu: 250m
+          memory: 128Mi
