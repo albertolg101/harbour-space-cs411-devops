@@ -1,83 +1,67 @@
 # Prompts
 
-A chronological log of the prompts used to build the containerization and
-CI/CD pipeline for this project, along with what each one produced.
+A chronological log of the prompts used during the Kubernetes deployment
+session, along with what each one produced.
 
-## 1. Containerize the app
+## 1. Debug kubectl pipeline failure
 
-> add a Dockerfile to the repo, use golang:1.24
+> why did I got this error: [...] `kubectl --token=**** delete pod myapp
+> --ignore-not-found=true` [...] couldn't get current server API group list
+> [...] Authentication required
 
-Created a multi-stage `Dockerfile`. Since the app has no `go.mod`, the binary
-is built directly from the file (`go build main.go`). A static binary
-(`CGO_ENABLED=0`) is produced in the `golang:1.24` build stage and copied into
-a minimal runtime stage. Exposes port `4444`.
+A conceptual/debugging question (no file changes). Key takeaways:
 
-## 2. CI/CD: build and push the image
+- The `kubectl` commands in the Jenkinsfile reference `${KUBE_ARGS}`, but that
+  environment variable is **never defined** in the pipeline — it expands to an
+  empty string.
+- Without `--server`, kubectl was hitting the **Jenkins server** instead of the
+  Kubernetes API server. The HTML login page in the error confirmed this.
+- Fix: define `KUBE_ARGS` in the pipeline's `environment` block (or as a
+  Jenkins global env var) with the correct `--server` and
+  `--certificate-authority` flags pointing at the real K8s API.
 
-> following the same pattern used in this Jenkinsfile [...] add a new one that
-> runs docker build and tags the image as ttl.sh/albertolg101:2h and push it
+## 2. Liveness vs readiness probes
 
-Added Build + Push stages to the `Jenkinsfile` that build the image and push it
-to `ttl.sh` (anonymous ephemeral registry; the `:2h` tag expires after 2h, no
-credentials needed).
-
-## 3. CI/CD: deploy stage
-
-> Add a Jenkins stage that runs on the docker machine. Pull the image from
-> ttl.sh. Run the container with -p 4444:4444 so the app is reachable on the
-> VM's :4444.
-
-Added a Deploy stage. After a couple of iterations (label mismatch, raw SSH)
-the deploy was switched to **Ansible**:
-
-> lets use ansible
-
-The Deploy stage now runs `ansible-playbook` over the `docker-ssh-key`
-credential, using an inline inventory (`-i "$DEPLOY_HOST,"`). A new
-`playbook.yml` pulls the image, removes any old container, and runs it with
-`-p 4444:4444`.
-
-## 4. Container restart policy
-
-> lets add restart on failure
->
-> lets use unless-stopped
-
-Added `--restart unless-stopped` to the `docker run` in `playbook.yml` so the
-container survives crashes and VM reboots.
-
-## 5. Healthcheck
-
-> lets add healthcheck directive. Add
-> `HEALTHCHECK --interval=10s --timeout=2s CMD wget -qO- http://localhost:4444/ || exit 1`
-> to the Dockerfile.
-
-Added the `HEALTHCHECK`. Because distroless has no shell or `wget`, the runtime
-base was switched to `alpine:3.20`, which bundles BusyBox `wget`.
-
-## 6. Discussion: healthchecks in Kubernetes
-
-> what does k8s do with healthcheck? why does it need it?
+> what is the difference between livenessProbe.httpGet and
+> readinessProbe.httpGet
 
 A conceptual question (no file changes). Key takeaways:
 
-- Kubernetes **ignores** the Dockerfile `HEALTHCHECK` directive — that's a
-  Docker/Compose feature. K8s uses its own **probes** defined in the Pod spec.
-- **Liveness probe**: if it fails, K8s restarts the container (self-healing for
-  hung-but-running processes).
-- **Readiness probe**: if it fails, K8s removes the Pod from the Service
-  endpoints (no traffic) without restarting — enables zero-downtime rollouts.
-- **Startup probe**: gates liveness/readiness until a slow app has booted.
-- `httpGet` probes are run by the kubelet, so no `wget`/`curl` is needed inside
-  the container (one reason distroless works fine in K8s).
+- **`livenessProbe`** — "Is the container still alive?" If it fails, Kubernetes
+  **kills and restarts** the container. Detects deadlocks, infinite loops, or
+  hung processes.
+- **`readinessProbe`** — "Is the container ready to receive traffic?" If it
+  fails, Kubernetes **removes the pod from Service endpoints** (stops routing
+  traffic) but does **not** restart it. Once the probe passes again, traffic
+  resumes.
+- A common pattern is to use both: readiness to avoid sending traffic before
+  the app is ready, liveness to recover from stuck processes.
 
-## 7. Pin base images by digest
+## 3. Why memory requests/limits matter
 
-> Pin base image by digest, not :latest or version tag. Change FROM golang:1.24
-> to FROM golang:1.24@sha256:<digest> (pin both stages if multi-stage)
+> what can go wrong if I dont set resources.limits.memory or
+> resources.requests.memory?
 
-Pinned both stages to their multi-arch index digests (digests fetched with
-`docker buildx imagetools inspect`):
+A conceptual question (no file changes). Key takeaways:
 
-- `golang:1.24@sha256:d2d2bc1c84f7e60d7d2438a3836ae7d0c847f4888464e7ec9ba3a1339a1ee804`
-- `alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc`
+- Without `requests.memory`, the scheduler can place the pod on a node without
+  enough memory and can overcommit nodes.
+- Without `limits.memory`, a container can consume unlimited memory on the node,
+  starving other pods or triggering the kernel OOM killer unpredictably.
+- Kubernetes assigns a QoS class based on requests/limits: **Guaranteed**
+  (requests == limits), **Burstable** (partial), or **BestEffort** (none set).
+  BestEffort pods are the first to be evicted under memory pressure.
+
+## 4. Pod IPs vs Services
+
+> what pod ips are bad worse than services?
+
+A conceptual question (no file changes). Key takeaways:
+
+- Pods are ephemeral — every restart assigns a **new IP**, breaking anything
+  that relied on the old one.
+- Pod IPs offer no load balancing, no health-aware routing, and break when
+  scaling up or down.
+- A Service provides a **stable DNS name and cluster IP**, automatic load
+  balancing across healthy pods, and decouples clients from individual pod
+  lifecycles.
