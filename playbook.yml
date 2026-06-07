@@ -1,0 +1,107 @@
+- hosts: all
+  tasks:
+    - name: Create application group
+      become: True
+      ansible.builtin.group:
+        name: myapp
+        system: true
+
+    - name: Create application user
+      become: True
+      ansible.builtin.user:
+        name: myapp
+        group: myapp
+        system: true
+        create_home: false
+        shell: /usr/sbin/nologin
+
+    - name: Create application directory
+      become: True
+      ansible.builtin.file:
+        path: /opt/myapp
+        state: directory
+        owner: myapp
+        group: myapp
+        mode: "0755"
+
+    - name: Copy the artifact
+      become: True
+      ansible.builtin.copy:
+        src: main
+        dest: /opt/myapp/main
+        owner: myapp
+        group: myapp
+        mode: "0755"
+      notify: Restart myapp.service
+
+    - name: Check for old service unit
+      become: True
+      ansible.builtin.stat:
+        path: /etc/systemd/system/main.service
+      register: old_service_unit
+
+    - name: Stop and disable old service
+      become: True
+      ansible.builtin.systemd:
+        name: main.service
+        enabled: false
+        state: stopped
+      when: old_service_unit.stat.exists
+
+    - name: Remove old service unit
+      become: True
+      ansible.builtin.file:
+        path: /etc/systemd/system/main.service
+        state: absent
+      when: old_service_unit.stat.exists
+      notify: Reload systemd
+
+    - name: Create a unit file
+      become: True
+      ansible.builtin.copy:
+        src: myapp.service
+        dest: /etc/systemd/system/myapp.service
+        owner: root
+        group: root
+        mode: "0644"
+      notify: Restart myapp.service
+
+    - name: Ensure the service is running
+      become: True
+      ansible.builtin.systemd:
+        name: myapp.service
+        daemon_reload: true
+        enabled: true
+        state: started
+
+    - name: Apply pending service restarts before health check
+      ansible.builtin.meta: flush_handlers
+
+    - name: Check application health endpoint
+      ansible.builtin.uri:
+        url: http://127.0.0.1:4444/
+        method: GET
+        return_content: true
+        status_code: 200
+      register: healthcheck
+      retries: 10
+      delay: 2
+      until:
+        - healthcheck.status | default(0) == 200
+        - healthcheck.json is defined
+        - healthcheck.json.Name == "Hello"
+        - healthcheck.json.Description == "World"
+        - healthcheck.json.Url is defined
+
+  handlers:
+    - name: Reload systemd
+      become: True
+      ansible.builtin.systemd:
+        daemon_reload: true
+
+    - name: Restart myapp.service
+      become: True
+      ansible.builtin.systemd:
+        name: myapp.service
+        daemon_reload: true
+        state: restarted

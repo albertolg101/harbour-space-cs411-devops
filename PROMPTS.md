@@ -1,214 +1,114 @@
-# PROMPTS.md — introduction-to-builds
+# Prompts and Answers
 
-## Context
+## Deployment to Cloud (EC2 via Terraform)
 
-This file documents the AI-assisted work and thinking process I used while completing the `introduction-to-builds` iximiuz challenge. The main goal was to understand how to build, inspect, and run Go binaries across different operating systems and architectures, and to prepare the required reflection and debug write-up.
+**Prompt:** Read the current state of the repository and tell me what steps am I missing for deploying to EC2.
 
-## Prompts and assistance used
+**Answer:** The Terraform config was missing a security group (tcp/22 and tcp/4444), an SSH key pair, and an output for the public IP. The Jenkinsfile had broken `withCredentials` syntax in the Deploy stage (mixed `sshUserPrivateKey` with `string` bindings) and a leftover old deploy command referencing variables that no longer existed.
 
-### 1. Understanding the submission requirements
+**Prompt:** Why `aws-access-key-id` and not `aws-access-key`?
 
-**Prompt:**  
-“Briefly explain what do I have to do here.”
+**Answer:** The credential ID is an arbitrary string chosen when creating the credential in Jenkins. It just needs to match between Jenkins and the Jenkinsfile. It has no relation to AWS naming conventions.
 
-**Summary of help received:**  
-I asked for a short explanation of the challenge requirements. The response clarified that I needed to complete the iximiuz challenge, push the required files to the `main` branch of my GitHub repository, and submit the iximiuz URL, GitHub repo URL, and `PROMPTS.md` in Google Classroom.
+**Prompt:** Why not change the environment variable name?
 
-### 2. Planning next steps after creating the GitHub repo
+**Answer:** `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` are the standard names that AWS SDKs and tools (including Terraform) look for. Changing them would break Terraform's ability to authenticate.
 
-**Prompt:**  
-“The last step I did was to create the GitHub repo, what are the next steps I have to do, explain them shortly and very clear/concise.”
+**Prompt:** Explain what each entry in `main.tf` does.
 
-**Summary of help received:**  
-The answer gave me a practical sequence: clone the repo into the playground, create or copy `main.go`, build the binary with `go build -o main main.go`, run and test it with `curl`, create at least one stretch artifact, write `REFLECTION.md` and `DEBUG.md`, commit everything, and push to `main`.
+**Answer:**
 
-### 3. Understanding executable formats
+- `terraform {}` — pins provider versions and configures S3 backend for shared state
+- `provider "aws"` — sets the AWS region (eu-west-3), auth comes from env vars
+- `data "aws_ami" "ubuntu"` — looks up the latest Ubuntu 24.04 AMI from Canonical
+- `tls_private_key` — generates an RSA key pair in memory (later removed in favor of Jenkins-managed keys)
+- `aws_key_pair` — registers a public key with AWS under a name
+- `local_file` — writes the private key to disk (later removed)
+- `aws_security_group` — firewall rules: SSH and app port 4444 inbound, all outbound
+- `aws_instance` — launches the EC2 instance with the AMI, key pair, and security group
+- `output "public_ip"` — exposes the instance IP so the Deploy stage can read it
 
-**Prompt:**  
-“From there, what does Mach-O mean?”
+**Prompt:** What does `resource "aws_key_pair" "deployer"` mean?
 
-**Summary of help received:**  
-I learned that Mach-O means Mach Object and is the executable format used by macOS. This helped me understand why a file reported as `Mach-O 64-bit executable x86_64` was built for macOS Intel, not Linux.
+**Answer:** `aws_key_pair` is the resource type — it tells Terraform which AWS API to call (EC2 Key Pairs). `"deployer"` is the local name — an arbitrary label used only within Terraform to reference this resource (e.g. `aws_key_pair.deployer.key_name`). AWS never sees the local name.
 
-### 4. Understanding cross-compilation output
+**Prompt:** Is the private key stored in S3?
 
-**Prompt:**  
-“For what OS is this: `main-arm64: ELF 64-bit LSB executable, ARM aarch64...`”
+**Answer:** Indirectly, yes. The `tls_private_key` resource stores its private key material in Terraform's state file, and the state file lives in the S3 bucket. Anyone with access to the bucket can read the state and extract the private key. The state is encrypted at rest (`encrypt = true`), but it's a known tradeoff.
 
-**Summary of help received:**  
-The response explained that this binary was built for Linux on ARM64. I learned that `ELF` indicates a Linux/Unix-style executable and `ARM aarch64` means ARM64 architecture.
+**Prompt:** Is there a better solution for this task's scope?
 
-### 5. Comparing `file` command outputs
+**Answer:** Two options: (A) create the key pair in the AWS console manually and reference it by name in Terraform, or (B) use `tls_private_key` in Terraform. Option B is fully automated but stores the key in state. For a class project with a private S3 bucket, either works.
 
-**Prompt:**  
-“Why the second one has more details than the second? Is the first one stripped?”
+**Prompt:** Can we manage the SSH key without Terraform generating it?
 
-**Summary of help received:**  
-The explanation clarified that the `file` command often shows more metadata for ELF binaries than for Mach-O binaries. I also learned that a shorter `file` output does not necessarily mean the binary is stripped, and that `go tool nm main` can help check for symbols.
+**Answer:** Yes. Generate the key locally with `ssh-keygen`, upload the private key to Jenkins as an SSH credential, and have Terraform register the public key with AWS. The public key is derived at runtime using `ssh-keygen -y -f $SSH_KEY` and passed to Terraform as a variable.
 
-### 6. Debugging the GLIBC error
+**Prompt:** How does Terraform know which machine to deploy the SSH key to?
 
-**Prompt:**  
-“What can this be: `./main: /lib/x86_64-linux-gnu/libc.so.6: version GLIBC_2.34 not found`”
+**Answer:** It doesn't deploy to a specific machine. `aws_key_pair` just registers the public key with AWS. The `aws_instance` resource references that key pair via `key_name`, and AWS injects the public key into the instance's `authorized_keys` at boot via cloud-init.
 
-**Summary of help received:**  
-I learned that this usually means the binary was built on a newer Linux system with a newer glibc version and then copied to an older system that does not have the required glibc version.
+**Prompt:** What does the `aws_instance` resource do?
 
-### 7. Finding another possible cause
+**Answer:** Creates the EC2 instance. `ami` is the OS image (Ubuntu 24.04), `instance_type` is the hardware size (t2.micro, free tier), `key_name` is which SSH key pair to inject at boot, `vpc_security_group_ids` is the firewall rules to attach, and `tags` sets the display name in the AWS console.
 
-**Prompt:**  
-“What can be another cause?”
+**Prompt:** What does the `data "aws_ami"` block do?
 
-**Summary of help received:**  
-The answer explained that CGO could have been enabled during the Go build, causing the binary to dynamically link against glibc. This gave me a second hypothesis for `DEBUG.md`.
+**Answer:** A read-only lookup that queries AWS for the latest Ubuntu 24.04 AMI published by Canonical (owner `099720109477`). `most_recent = true` picks the newest match. The filter narrows by AMI name pattern. This avoids hardcoding an AMI ID that varies by region and goes stale.
 
-### 8. Writing ranked hypotheses
+**Prompt:** What does `ssh-keygen -N ""` stand for?
 
-**Prompt:**  
-“I need to write two ranked hypotheses for the root cause. Higher likelihood first, with a one-sentence reason why each is plausible.”
+**Answer:** `-N ""` sets an empty passphrase on the key. Without it, `ssh-keygen` would prompt interactively. Empty passphrase is needed for automated use in Jenkins.
 
-**Summary of help received:**  
-I received a clearer way to phrase the two hypotheses: first, the binary was built on a newer Linux system than the customer VM; second, the binary was built with CGO enabled, creating a dynamic glibc dependency.
+**Prompt:** What does `ssh-keygen -f` stand for?
 
-### 9. Understanding the difference between the two hypotheses
+**Answer:** `-f` specifies the output filename for the key. Without it, `ssh-keygen` would prompt for a path (defaulting to `~/.ssh/id_rsa`).
 
-**Prompt:**  
-“I don't get the difference between these two.”
+**Prompt:** I still don't understand how Provision has access to the public key.
 
-**Summary of help received:**  
-The answer explained that the first hypothesis describes where the `GLIBC_2.34` requirement came from, while the second explains why the Go binary depended on glibc at all.
+**Answer:** It didn't — the `aws_instance` referenced a key name that didn't exist in AWS. The solution: Jenkins holds the private key as a credential, the Provision stage extracts the public key at runtime with `ssh-keygen -y -f $SSH_KEY`, and passes it to Terraform as a variable. Terraform creates the `aws_key_pair` with that public key.
 
-### 10. Understanding static linking
+**Prompt:** Can we take the public key from a Jenkins variable as well?
 
-**Prompt:**  
-“What happen if I statically link but build it in a newer OS?”
+**Answer:** You could store it as a separate secret, but then you have two credentials for the same key pair that must stay in sync. Deriving it from the private key with `ssh-keygen -y -f` is simpler: one credential, no duplication.
 
-**Summary of help received:**  
-I learned that a statically linked Go binary built with `CGO_ENABLED=0` usually avoids the target machine’s glibc dependency, although the OS and architecture still need to match.
+**Prompt:** What does `ssh-keygen -y -f` do?
 
-### 11. Verification commands
+**Answer:** `-f` specifies the file to read from, `-y` tells `ssh-keygen` to extract the public key from a private key file instead of generating a new pair.
 
-**Prompt:**  
-“One verification step per hypothesis — a concrete command you'd run on the customer's VM (or yours) that distinguishes them.”
+**Prompt:** Remind me the command to create the key pair.
 
-**Summary of help received:**  
-The suggested verification commands were `ldd --version` to check the glibc version on the target VM and `ldd ./main` to check whether the binary dynamically links against glibc.
+**Answer:** `ssh-keygen -t rsa -b 4096 -f cs411-cicd-ssh-key.pem -N ""` — creates the private key and a `.pub` file alongside it.
 
-### 12. Building a dynamically linked Go binary
+**Prompt:** How do I login with a profile to run `terraform init`?
 
-**Prompt:**  
-“How to build a dynamically linked Go binary?”
+**Answer:** `AWS_PROFILE=your-profile-name terraform init`, or `export AWS_PROFILE=your-profile-name` before running commands.
 
-**Summary of help received:**  
-I learned that `CGO_ENABLED=1 go build -ldflags='-linkmode=external' -o main main.go` can produce a dynamically linked Go binary, and that `ldd ./main` can confirm the dynamic dependencies.
+**Prompt:** I'm getting an `InvalidClientTokenId` error on `terraform init`.
 
-### 13. Reading `ldd` output
+**Answer:** AWS credentials are invalid or expired. Verify with `aws sts get-caller-identity --profile your-profile-name`. If that fails, generate new access keys in the AWS console (IAM → Users → Security credentials) and update with `aws configure --profile your-profile-name`.
 
-**Prompt:**  
-“What does this shows? `linux-vdso.so.1`, `libc.so.6`, `/lib64/ld-linux-x86-64.so.2`”
+**Prompt:** `terraform --chdir=terraform init` gives "Invalid flags before the subcommand".
 
-**Summary of help received:**  
-The response explained that this output proves the binary is dynamically linked and depends on glibc. In particular, `libc.so.6` is the important evidence for the GLIBC dependency.
+**Answer:** Terraform uses a single dash: `-chdir`, not `--chdir`.
 
-### 14. Understanding CGO
+**Prompt:** Restrict tcp/22 to my laptop's current IP.
 
-**Prompt:**  
-“What does CGO mean?”
+**Answer:** Updated the security group SSH ingress to use the laptop's current public IP with a `/32` CIDR.
 
-**Summary of help received:**  
-I learned that CGO means C Go and is the Go feature that lets Go code call C code and use C libraries. I also learned the practical difference between `CGO_ENABLED=1` and `CGO_ENABLED=0`.
+**Prompt:** Do I have to leak my IP in the committed code?
 
-## How I used the assistance
+**Answer:** No. The IP is stored as a Jenkins secret (`ssh-allowed-ip`) and passed to Terraform at runtime as `-var "ssh_allowed_cidr=$MY_IP/32"`. Nothing is committed to the repo.
 
-I used the AI responses to understand the concepts behind the commands instead of only copying commands. The most useful ideas were the difference between Mach-O and ELF, the meaning of architecture labels like `x86_64` and `aarch64`, the role of dynamic linking, and why CGO can make a Go binary depend on glibc. I used that understanding to prepare the challenge artifacts, especially the `DEBUG.md` explanation.
+**Prompt:** How do I curl the page to verify everything is working?
 
-## Commands I planned to use or verify
+**Answer:** `curl http://<EC2_PUBLIC_IP>:4444/` — use `http`, not `https`, since the app doesn't serve TLS.
 
-```bash
-go build -o main main.go
-file ./main
-ldd ./main
-ldd --version
-CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o main main.go
-CGO_ENABLED=1 go build -ldflags='-linkmode=external' -o main main.go
-go build -ldflags='-s -w' -o main-stripped main.go
-du -b ./main ./main-stripped
-```
+**Prompt:** What Jenkins credentials are required?
 
-## Remaining unclear points
+**Answer:** Four credentials:
 
-I still need more practice with the exact details of static versus dynamic linking in Go, especially how CGO changes the final binary depending on the operating system, architecture, and installed C libraries. I understand the high-level idea, but I would like to become more confident predicting the result before running `file` or `ldd`.
-
-# From a different LLM session:
-
-## Prompt 1
-
-Explain what these Go build flags do:
-
-```bash
-go build -ldflags='-s -w' -o main-stripped main.go
-```
-
-## Prompt 2
-
-What is DWARF debug information, and why does the Go linker flag `-w` remove it?
-
-## Prompt 3
-
-Given this Go HTTP server, write a Ruby/Sinatra version that returns the same JSON shape on port 4444:
-
-```go
-package main
-
-import (
-    "encoding/json"
-    "fmt"
-    "log"
-    "net/http"
-)
-
-type Simple struct {
-    Name        string
-    Description string
-    Url         string
-}
-
-func handler(w http.ResponseWriter, r *http.Request) {
-    simple := Simple{"Hello", "World", r.Host}
-
-    jsonOutput, _ := json.Marshal(simple)
-
-    w.Header().Set("Content-Type", "application/json")
-
-    fmt.Fprintln(w, string(jsonOutput))
-}
-
-func main() {
-    fmt.Println("Server started on port 4444")
-    http.HandleFunc("/", handler)
-    log.Fatal(http.ListenAndServe(":4444", nil))
-}
-```
-
-## Prompt 4
-
-I am getting this Sinatra error:
-
-```text
-attack prevented by Rack::Protection::HostAuthorization
-403 Host not permitted
-```
-
-How do I fix it for a small lab app running on port 4444?
-
-## Prompt 5
-
-Is this reflection answer correct?
-
-```text
-For the Go binary to run, I need only the binary statically linked or dynamically linked with the correct library versions installed, but for Ruby I need the interpreter and the required gems.
-```
-
-## Prompt 6
-
-Help me write a clear `REFLECTION.md` explaining the difference between what is needed to run a Go binary and what is needed to run a Ruby/Sinatra script.
+- `aws-access-key-id` (Secret text) — AWS access key
+- `aws-secret-access-key` (Secret text) — AWS secret key
+- `cs411-cicd-ssh-key` (SSH Username with private key) — private key for EC2 access
+- `ssh-allowed-ip` (Secret text) — IP address allowed to SSH into the instance
