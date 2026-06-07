@@ -34,6 +34,11 @@ variable "public_key" {
   type        = string
 }
 
+variable "ssh_allowed_cidr" {
+  description = "CIDR block allowed to SSH into the instance"
+  type        = string
+}
+
 resource "aws_key_pair" "deployer" {
   key_name   = "cs411-cicd-ssh-key"
   public_key = var.public_key
@@ -48,7 +53,7 @@ resource "aws_security_group" "app" {
     from_port   = 22
     to_port     = 22
     protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
+    cidr_blocks = [var.ssh_allowed_cidr]
   }
 
   ingress {
