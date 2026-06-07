@@ -1,50 +1,51 @@
-# Debug Task
-
 ## Hypotheses
 
-1. **The whole image is arm64.** A plain `docker build` on Mac stamps the
-   image config with `architecture: arm64` and ships an arm64 binary, so the
-   amd64 VM pulls a single-arch arm64 image it physically can't run.
+1. **Expired TTL on the image.** The `:2h` tag on ttl.sh means the image gets
+   deleted after roughly two hours. Jenkins can still pull it because it has a
+   local copy cached from when it built and pushed the image, but the k8s node
+   needs to download it fresh from the registry — and by that point the tag
+   might not exist anymore.
 
-2. **The manifest says amd64 but the binary inside is still arm64.** If the
-   runtime stage was forced to amd64 but the `go build` wasn't (no `GOARCH`), the
-   metadata looks correct while the ELF in `/app/main` is the wrong arch — the two
-   layers disagree.
+2. **Network issue on the node side.** Jenkins and the k8s nodes don't
+   necessarily share the same network config. The node might not be able to
+   resolve `ttl.sh` or might have some firewall/proxy blocking outbound traffic
+   to it, so the pull times out even though Jenkins has no issues.
 
-## One check per guess
+## Verification
 
-For guess 1, ask the registry what architecture the image claims:
-
-```sh
-docker manifest inspect ttl.sh/albertolg101:2h | grep architecture
-```
-
-If it only lists `"architecture": "arm64"`, it's guess 1.
-
-For guess 2, look past the metadata at the binary itself on the VM:
+For each hypothesis, start with:
 
 ```sh
-docker run --rm --entrypoint="" ttl.sh/albertolg101:2h file /app/main
+kubectl describe pod myapp
 ```
 
-If the manifest said amd64 but `file` reports `ELF ... ARM aarch64`, it's guess 2.
+and scroll to the `Events` at the bottom.
+
+- If I see `manifest unknown` or a 404-type error, the image is gone from the
+  registry → expired tag (hypothesis 1).
+- If I see `dial tcp: i/o timeout` or `no such host`, the node can't reach
+  ttl.sh at all → network problem (hypothesis 2).
 
 ## Fix
 
-Stay minimal — no framework changes, just build for the VM's arch with buildx and
-push in one go:
+The expired tag is the more common case with ttl.sh. Two things to do:
 
-```sh
-docker buildx build --platform linux/amd64 -t ttl.sh/albertolg101:2h --push .
+1. Make sure `docker push` and `kubectl apply` happen back-to-back in the same
+   pipeline run so there's no gap where the tag could expire.
+2. Add `imagePullPolicy: Always` to the container spec so the kubelet always
+   pulls a fresh copy instead of skipping the pull if it thinks it already has
+   the image.
+
+```yaml
+imagePullPolicy: Always
 ```
 
-Because the build stage now runs as amd64, the `CGO_ENABLED=0 GOOS=linux go build`
-already in the Dockerfile produces an amd64 binary, so the metadata and the ELF
-both end up amd64. (If I want it to keep running on my Mac too, I'd use
-`--platform linux/amd64,linux/arm64` instead.)
+(For a private registry the fix would be adding `imagePullSecrets`; for a wrong
+tag it would just be fixing the tag string in the manifest.)
 
-## Underlying lesson
+## Lesson
 
-"The image is built" only promises the layers assembled on my build host's
-architecture — it says nothing about whether the binary inside can actually
-execute on the x86_64 runtime host.
+Being able to pull an image from my machine just means that *my* machine has
+network access and possibly a cached copy. What actually matters is whether the
+kubelet on the cluster node can pull it on its own, with its own network and
+credentials — those are two completely different environments.
