@@ -1,57 +1,71 @@
-# Debug Task
+# Debug — curl to EC2 public IP hangs
 
-## Most Likely Causes
+## Scenario
 
-1. The application was probably launched directly from the SSH deployment shell, such as `./main &`. In that setup the process can stay attached to the login session and may receive `SIGHUP`, or otherwise be cleaned up, when SSH disconnects. This fits the symptom where the app is reachable during the session but disappears as soon as the session ends.
+Pipeline passes. SSH into the instance, `curl localhost:4444` gives back the
+expected JSON. From my laptop, `curl http://<public-ip>:4444` just hangs
+until I hit Ctrl-C. No "connection refused", no timeout message, just silence.
 
-2. The deployment may only confirm that the file was copied and the start command exited successfully. That does not prove the app survived after the remote shell closed, or that port `4444` is still accepting requests. A pipeline can pass while the real service is already dead by the time someone tests it.
+The key detail is that it hangs instead of being refused. A hang means my
+SYN packet is being silently dropped somewhere — nobody is answering. If the
+port was simply closed or the app wasn't listening, I'd get "connection refused"
+right away because the kernel would send back a RST.
 
-## How To Verify
+## Hypotheses
 
-To check whether the app is tied to the SSH session, inspect the process while it is still running:
+1. **Security Group is missing an allow rule for port 4444.**
+   AWS Security Groups drop traffic that isn't explicitly allowed, with no
+   response at all — which matches the silent hang I'm seeing.
 
-```sh
-ps aux | grep main
-```
+2. **A Network ACL on the subnet or a host-level firewall (ufw/iptables) is
+   blocking port 4444.**
+   NACLs are stateless and drop by default too, producing the same hang
+   symptom; a host firewall like ufw could also silently discard the packet
+   before it reaches the app.
 
-If the `main` process has the SSH shell in its ancestry or belongs to the SSH session instead of being managed by a supervisor, it is not safely detached from the login lifecycle.
+## Verification
 
-To check whether the pipeline actually validates the running service, inspect the Jenkins output:
+1. Go to EC2 in the AWS console, click on the instance, open the Security
+   Group, and look at the Inbound rules tab. If there's no rule for
+   TCP 4444, that's the problem. Can also check from the terminal:
+   ```
+   aws ec2 describe-security-groups --group-ids <sg-id> --query "SecurityGroups[*].IpPermissions"
+   ```
+   And from my laptop I can test with:
+   ```
+   nc -vz <public-ip> 4444
+   ```
+   If it just hangs (instead of saying "refused"), that confirms something
+   is dropping the packet before it reaches the app.
 
-```sh
-grep curl jenkins-console.log
-grep systemctl jenkins-console.log
-```
-
-If the logs show copy/start commands but no listener check, `systemctl status`, or HTTP request to `http://<target-host>:4444/`, then the pipeline is not proving the deployed app is still healthy.
+2. Check the subnet's NACL in VPC > Subnets > select subnet > Network ACL,
+   and look at both inbound and outbound rules. On the instance itself, run:
+   ```
+   sudo ufw status
+   sudo iptables -L -n
+   ```
+   If any of these show a deny or missing allow for 4444, that's the cause.
 
 ## Fix
 
-Run the app under a service manager. A small `systemd` unit is the preferred approach because the process becomes independent of SSH and can be restarted, inspected, and logged consistently:
+Add the missing inbound rule to the Security Group:
 
-```sh
-sudo cp main /opt/myapp/main
-sudo cp myapp.service /etc/systemd/system/myapp.service
-sudo systemctl daemon-reload
-sudo systemctl enable myapp.service
-sudo systemctl restart myapp.service
-sudo systemctl status myapp.service
+```
+aws ec2 authorize-security-group-ingress \
+  --group-id <sg-id> \
+  --protocol tcp \
+  --port 4444 \
+  --cidr 0.0.0.0/0
 ```
 
-After restarting the service, make the pipeline verify the actual HTTP contract:
-
-```sh
-curl http://127.0.0.1:4444/
-```
-
-If `systemd` is not available, detaching with `nohup` is a fallback:
-
-```sh
-nohup /opt/myapp/main >/var/log/myapp.log 2>&1 </dev/null &
-```
-
-That fallback is weaker. It does not provide the same restart behavior, status reporting, or log integration that `systemd` gives.
+If it turned out to be a NACL or host firewall instead, just open port 4444
+there. No need to rebuild the VPC or change Terraform.
 
 ## Lesson
 
-Starting a process is not the same thing as deploying a service. A raw background process still depends on the environment that launched it, while a supervised service has an owner that can keep it running, report its state, and give the deployment pipeline something reliable to manage.
+When a packet is **dropped** (by a Security Group or NACL), there's no reply
+at all — the client just waits and retransmits, which looks like a hang. When
+a packet **reaches a closed port**, the host sends back a TCP RST and the
+client immediately gets "connection refused". The symptom tells you whether
+the problem is a firewall silently eating packets or the app genuinely not
+listening.
